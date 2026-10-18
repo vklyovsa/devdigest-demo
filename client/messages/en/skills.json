@@ -1,0 +1,185 @@
+{
+  "page": {
+    "crumbLab": "Skills Lab",
+    "crumbSkills": "Skills",
+    "heading": "Skills",
+    "subtitle": "Reusable instruction blocks. A skill is text — agents load it, nothing runs it.",
+    "addSkill": "Add Skill",
+    "searchPlaceholder": "Search skills…",
+    "loadError": "Could not load skills.",
+    "menu": {
+      "create": "Create from scratch",
+      "fromFile": "Import from file or archive",
+      "community": "Search community skills…"
+    },
+    "empty": {
+      "title": "No skills yet",
+      "body": "A skill is a named block of instructions an agent loads before it reviews. Write one, or import a vetted community skill.",
+      "cta": "Create your first skill"
+    },
+    "selectPrompt": {
+      "title": "Select a skill",
+      "body": "Pick a skill on the left to preview its body."
+    },
+    "backToList": "All skills"
+  },
+  "detail": {
+    "crumbSkill": "Skill",
+    "loadError": "Could not load this skill.",
+    "version": "v{version}",
+    "delete": "Delete skill",
+    "deleteConfirm": "Delete skill \"{name}\"? Agents that link it lose it immediately. Its eval cases and eval runs are deleted with it.",
+    "notFound": {
+      "title": "Skill not found",
+      "body": "It may have been deleted."
+    },
+    "tabs": {
+      "config": "Config",
+      "context": "Context",
+      "preview": "Preview",
+      "evals": "Evals",
+      "stats": "Stats",
+      "versions": "Versions"
+    },
+    "deleteTitle": "Delete this skill?"
+  },
+  "config": {
+    "title": "Configuration",
+    "enabled": "Enabled",
+    "name": "Name",
+    "namePlaceholder": "pr-quality-rubric",
+    "nameHint": "Kebab-case, like a filename — it labels the block in the assembled prompt.",
+    "description": "Description",
+    "descriptionPlaceholder": "Detects …",
+    "descriptionHint": "This is the skill's interface: write it as a directive — “Detects…”, “Flags…”, “Requires…”. It is how you (and the agent) decide when this skill applies.",
+    "type": "Type",
+    "body": "Skill body",
+    "bodyHint": "Markdown. It is appended to the agent's prompt verbatim, as one labelled block.",
+    "note": "What changed",
+    "notePlaceholder": "Tightened the scope rule",
+    "noteHint": "Optional. Saved with the version a body change creates.",
+    "save": "Save skill",
+    "saving": "Saving…",
+    "saved": "Saved (v{version})",
+    "savedToast": "Skill saved (v{version})",
+    "unsaved": "unsaved",
+    "tokens": "≈{count, number} tokens",
+    "untrustedNotice": "This skill was imported. Its text runs as instructions inside every agent that loads it — read it before enabling."
+  },
+  "preview": {
+    "title": "Preview",
+    "subtitle": "Rendered as the reviewing agent receives it.",
+    "empty": "This skill has no body yet."
+  },
+  "stats": {
+    "title": "Usage",
+    "subtitle": "Derived from the agent links — there is no separate tracking.",
+    "usedBy": "USED BY",
+    "agents": "{count, plural, one {# agent} other {# agents}}",
+    "agentsUnit": "{count, plural, one {agent} other {agents}}",
+    "version": "VERSION",
+    "promptSize": "PROMPT SIZE",
+    "tokensUnit": "≈ tokens",
+    "agentsUsing": "AGENTS USING THIS SKILL",
+    "open": "Open",
+    "position": "block #{order}",
+    "disabledAgent": "disabled",
+    "none": "No agent links this skill yet. Attach it from an agent's Skills tab."
+  },
+  "versions": {
+    "title": "Version history",
+    "count": "{count, plural, one {# version} other {# versions}}",
+    "subtitle": "Every body change snapshots the text, so a run can be read against the exact words it scored.",
+    "current": "Current",
+    "restore": "Restore",
+    "restoring": "Restoring…",
+    "noNote": "No note",
+    "restoredToast": "Restored v{version} as v{newVersion}",
+    "seeded": "Seeded",
+    "diff": "Diff",
+    "diffTitle": "v{version} → v{current} (current)",
+    "diffStat": "{added, number} added · {removed, number} removed"
+  },
+  "create": {
+    "title": "Create skill",
+    "subtitle": "A skill is reusable instructions. Any agent can load it; the agent decides the order.",
+    "cancel": "Cancel",
+    "create": "Create skill",
+    "creating": "Creating…",
+    "failed": "Could not create the skill.",
+    "defaultBody": "# Rule\n\nDescribe what the reviewer must look for, and what it must NOT flag."
+  },
+  "drawer": {
+    "title": "Add a skill",
+    "subtitle": "Import from a file or archive, or search the bundled community catalog",
+    "tabs": {
+      "file": "From file",
+      "community": "Community"
+    },
+    "importFailed": "Import failed",
+    "cancel": "Cancel",
+    "confirm": "Save skill",
+    "saving": "Saving…",
+    "back": "Back"
+  },
+  "file": {
+    "label": "Markdown file or .zip archive",
+    "hint": "Only the skill core is read. Executable files in an archive are listed, never unpacked or run.",
+    "choose": "Choose a file…",
+    "analyze": "Preview import",
+    "analyzing": "Reading…",
+    "tooBig": "This file is larger than 2 MB."
+  },
+  "community": {
+    "searchPlaceholder": "Search community skills (e.g. security)…",
+    "allLanguages": "All languages",
+    "bundledNotice": "Bundled catalog — these ship with DevDigest. Nothing is fetched from the network.",
+    "loadError": "Could not load community skills",
+    "retry": "Retry",
+    "noMatch": {
+      "title": "No matching skills",
+      "body": "Try a different search term."
+    },
+    "importing": "Importing…",
+    "import": "Import"
+  },
+  "importPreview": {
+    "title": "Preview before saving",
+    "subtitle": "Nothing is stored until you confirm. The imported skill arrives disabled.",
+    "trust": "This is somebody else's text. Once you enable it, it becomes instructions inside your agent's prompt.",
+    "name": "Name",
+    "description": "Description",
+    "type": "Type",
+    "body": "Skill body",
+    "filesUsed": "Read from the archive",
+    "filesSkipped": "Not imported",
+    "reason": {
+      "executable": "executable — never unpacked",
+      "not-markdown": "not markdown",
+      "too-large": "too large",
+      "not-core": "extra markdown, not the skill core"
+    },
+    "warnings": "Notes",
+    "saved": "Imported \"{name}\" — disabled until you vet and enable it."
+  },
+  "listItem": {
+    "needsVetting": "needs vetting",
+    "disabled": "disabled",
+    "vettingTitle": "Imported from outside this workspace — read it before enabling",
+    "agentCount": "{count, plural, =0 {no agents} one {# agent} other {# agents}}",
+    "noDescription": "No description",
+    "type": {
+      "rubric": "rubric",
+      "convention": "convention",
+      "security": "security",
+      "custom": "custom"
+    },
+    "source": {
+      "manual": "Manual",
+      "extracted": "Extracted",
+      "community": "Community",
+      "imported_url": "Imported"
+    },
+    "delete": "Delete skill"
+  }
+}

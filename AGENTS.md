@@ -1,0 +1,140 @@
+# DevDigest — repository map
+
+Local-first AI pull-request review. **Six standalone packages, not a workspace**:
+each has its own `package.json` and lockfile; code is shared through tsconfig path
+aliases, never through published modules.
+
+| Folder | Package | What it is | Port |
+|---|---|---|---|
+| `server/` | `@devdigest/api` | Fastify 5 + Drizzle ORM / Postgres (pgvector) | 3001 |
+| `client/` | `@devdigest/web` | Next.js 15 App Router + React 19 | 3000 |
+| `reviewer-core/` | `@devdigest/reviewer-core` | pure engine: diff → prompt → LLM → findings | — |
+| `e2e/` | `@devdigest/e2e` | deterministic browser e2e (agent-browser) | — |
+| `mcp/` | `@devdigest/mcp` | local MCP server over stdio, thin wrapper over the API | — |
+| `evals/` | `@devdigest/evals` | evals of the Claude Code harness itself: skills, subagents, instruction files | — |
+
+Node >= 22. **`server/`, `client/` and `evals/` use pnpm; `reviewer-core/`, `e2e/` and `mcp/` use npm.**
+Only Postgres runs in Docker — the API and the web app run on the host.
+
+## Commands
+
+- Whole stack: `./scripts/dev.sh` (Postgres + API :3001 + web :3000, seeded)
+- Migrations: `cd server && pnpm db:migrate` — **never applied on boot**
+- Browser e2e: `./scripts/e2e.sh` — isolated stack on alternate ports
+- MCP server: registered with the MCP client (`mcp/README.md`), **never started by
+  `./scripts/dev.sh` or `./scripts/e2e.sh`**
+- Harness evals: `cd evals && pnpm eval:quality` (static, no model); the model-backed
+  suite a change needs → § Harness evals
+- Per-package test / typecheck commands: see that package's `AGENTS.md`
+
+## Read when
+
+- Starting work inside a package → read its `AGENTS.md` first (`server/`, `client/`,
+  `reviewer-core/`, `e2e/`, `mcp/`). Per-directory autoload is unreliable in some editors,
+  so open it explicitly rather than assuming it loaded.
+- Starting, registering or changing the MCP server (tools, descriptions, errors) →
+  `mcp/AGENTS.md`, then `mcp/README.md`.
+- You need the end-to-end picture or the architecture diagrams → `README.md`.
+- Anything about test suites, the unit/integration split, or CI lanes → `TESTING.md`.
+- Writing or editing a reviewer agent's system prompt → `docs/agent-prompts/`.
+- Delegating to a project subagent (options, spec, plan, implement, tests, verification,
+  architecture / security review, docs) → `.claude/agents/README.md`.
+- Building an approved plan end to end (implementers, verification, architecture review
+  with fix rounds) → `/implement` (`.claude/commands/implement.md`).
+- Changing a skill, a project agent or an instruction file (`CLAUDE.md` / `AGENTS.md`) →
+  run the eval § Harness evals names for it; writing or reading an eval → `evals/README.md`.
+- Changing a project agent, a command or the pipeline, or asking how a multi-agent run
+  went → `docs/retro/README.md` and the newest entries in `docs/retro/ledger/`. An entry is
+  written only by `/workflow-retro`, which the user types — never start it yourself.
+- Working on a reviewer agent's eval cases, runs, scoring or the Eval Dashboard, or reading
+  its numbers → `docs/eval-pipeline.md` (not the root `evals/` package, which checks the harness).
+- A `git commit` from a Claude Code session is refused by a hook, or you change that hook
+  (`.claude/agents/scripts/commit-gate*.sh`, its `settings.json` entry) → `docs/commit-gate.md`.
+- The task comes from a written spec or a course lesson → `specs/` when it spans
+  packages, `<package>/specs/` when it lives in one.
+- Writing a spec → `specs/TEMPLATE.md` and `specs/README.md`; the `spec-creator` agent
+  writes it (`.claude/agents/README.md`).
+- Auditing dependencies (sizes, unused, version drift, advisories) → `/dependency-checker`
+  (`.claude/skills/dependency-checker/SKILL.md`); it reports, it never changes a lockfile.
+- Tooling or the environment behaves inexplicably → `INSIGHTS.md` (§ Recurring Errors).
+- You learned something non-obvious → append it to the matching `INSIGHTS.md` section.
+- Domain rules (Fastify, Drizzle, Postgres, Zod, React, Next, security) live in
+  `.claude/skills/` and load on demand — do not restate them anywhere else.
+
+## Session protocol
+
+- **Before the first edit** in a package → read its `INSIGHTS.md` in full and say which
+  entries bear on the task, or that none do. Root `INSIGHTS.md` when no package is named.
+- **When a surprise resolves, and before reporting a task complete** → run the
+  `engineering-insights` skill. It re-reads the file, skips what is already recorded, and
+  appends; it never rewrites. Having nothing substantial to add is the normal outcome.
+
+## Harness evals
+
+A change to the harness is checked by the eval it reaches, run from `evals/`:
+
+| Change | Minimum check |
+|---|---|
+| `.claude/skills/**` | `pnpm eval:quality`, then `pnpm exec vitest run skills/<name>/` when the skill has evals |
+| `.claude/agents/**` | `pnpm exec vitest run agents/<name>/` when the agent has evals, then `pnpm eval:workflow` |
+| `CLAUDE.md` / `AGENTS.md`, routing rules, `.claude/settings.json` | `pnpm eval:workflow` |
+| an eval case, a fixture or a scorer | measure the baseline again (`pnpm eval:repeat <suite> --label <name>`, or `pnpm eval:benchmark skills/<name>`) before comparing against it |
+
+Only `eval:quality` is free. Every other row starts model sessions on the Claude Code
+subscription: run the one suite the change reaches, never plain `pnpm eval`.
+`.github/workflows/eval-skills.yml`, `eval-agents.yml` and `eval-workflow.yml` pick the same suites from a pull request's diff.
+
+## Conventions
+
+- Cross-package imports go through tsconfig path aliases, so editing
+  `reviewer-core/src` breaks the server typecheck and triggers the server CI lane.
+- `@devdigest/shared` (Zod contracts) exists as **two copies**:
+  `server/src/vendor/shared` and `client/src/vendor/shared`. `reviewer-core`
+  type-checks against the server copy. A contract change must land in both.
+- CI is path-filtered per package: `.github/workflows/<package>.yml`.
+- Course lessons add features as self-contained modules; the DB schema already
+  contains every table, the unused ones simply sit empty.
+- **Tests may be run without asking** — any suite a change needs. They cannot reach the
+  dev DB: `server/vitest.config.ts` pins `DATABASE_URL` to an address nothing listens on
+  (`server/test/hermetic-env.test.ts` holds it there). One call per package —
+  typecheck, layering, tests: `.claude/agents/scripts/check-code.sh <package>`.
+- Project agents and hooks carry their own rules; they must work the same for every
+  developer, whatever their personal `~/.claude` settings (`.claude/agents/README.md`).
+
+## Naming conventions
+
+- **Packages** — `@devdigest/<name>`; the folder is the name (`server/` is the one
+  exception, `@devdigest/api`).
+- **Modules** — kebab-case files (`run-executor.ts`, `diff-parser.ts`). One server
+  feature is a folder: `src/modules/<name>/{routes,service,repository,helpers,constants}.ts`.
+- **React** — a component is a PascalCase folder holding `<Name>.tsx`, `index.ts`
+  and, when needed, `helpers.ts` / `constants.ts` / `styles.ts`. Route-local UI goes
+  in `_components/<Name>/`; cross-route chrome in `client/src/components/<kebab-case>/`.
+- **Tests** — `*.test.ts(x)` beside the code. DB-backed server tests MUST end in
+  `*.it.test.ts`. e2e flows are `NN-name.flow.json`, written e2e specs `<slug>.spec.md`.
+- **Contracts** — Zod schemas are PascalCase and the inferred type carries the same
+  name (`export const PrMeta` + `export type PrMeta`).
+- **Wire vs code** — JSON on the wire is snake_case (`head_sha`, `cost_usd`), TS is
+  camelCase, Drizzle columns are snake_case in SQL and camelCase in TS.
+- **Docs** — `specs/<YYYY-MM-DD>-<feature-slug>.md` (specs written before
+  `specs/TEMPLATE.md` carry no date), `docs/<topic>.md`, both kebab-case.
+  Migrations keep the generated `NNNN_<name>.sql` name — never renamed by hand.
+- **i18n** — `client/messages/<locale>/<namespace>.json`; keys are camelCase and
+  read as a dotted path (`list.columns.findings`).
+
+## Do not touch
+
+- **Lock-files** — `pnpm-lock.yaml` (`server/`, `client/`, `evals/`) and `package-lock.json`
+  (`reviewer-core/`, `e2e/`, `mcp/`) are never hand-edited: change a dependency through the
+  package manager in that package and commit the lockfile it writes. There is no
+  root lockfile, because this is not a workspace.
+- `server/clones/**` — runtime data (git-ignored): checkouts of imported repos.
+- `server/package.json` — marked `skip-worktree`; the local copy diverges from the
+  committed one, which is why CI invokes vitest directly instead of via scripts.
+
+## Gotchas
+
+- **Never `docker compose down -v`** — the volume holds every imported repo and
+  every review anyone has run locally.
+- `relation ... does not exist` means migrations were not applied, not a code bug.
+- Port 5432 already in use means another Postgres is running; nothing falls back.

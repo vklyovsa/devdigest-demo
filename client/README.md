@@ -1,0 +1,55 @@
+# `@devdigest/web` — the studio (Next.js 15)
+
+The DevDigest UI: import repos, browse pull requests, run and read AI reviews,
+and author agents. App Router + React Server/Client components, data via
+**TanStack Query** hooks over the Fastify API. (This is the starter surface;
+course lessons add the Skills, Memory, Eval, Blast/Brief, multi-agent, CI, and
+dashboard screens.)
+
+- **Stack:** Next.js 15 (App Router), React 19, TanStack Query, `next-intl`
+  (messages in `messages/<locale>/*.json`), `recharts`, `mermaid`,
+  `react-markdown`. UI primitives are vendored under `src/vendor/ui`
+  (`@devdigest/ui`) and shared Zod contracts under `src/vendor/shared`
+  (`@devdigest/shared`).
+- **API base:** `NEXT_PUBLIC_API_BASE` (default `http://localhost:3001`), used by
+  `src/lib/api.ts`. Every data hook lives in `src/lib/hooks/*`.
+- **Run:** `pnpm dev` (`:3000`). **Test:** `pnpm test` (vitest + jsdom, fetch
+  mocked — no API needed). **Typecheck:** `pnpm typecheck`.
+
+## UI route map
+
+Routes (`src/app/**/page.tsx`) and the API surface each leans on (via
+`src/lib/hooks/*` → `src/lib/api.ts`):
+
+```mermaid
+flowchart TD
+  ROOT["/"] -->|"useRepos → GET /repos"| PULLS["/repos/:repoId/pulls<br/>PR list"]
+  ONB["/onboarding<br/>add repo"] -->|"POST /repos"| API[("Fastify API")]
+  PULLS --> PR["/pulls/:number<br/>review detail<br/>(overview · diff · findings)"]
+
+  AGENTS["/agents"] --> AGENT["/agents/:id<br/>editor (config · skills · evals tab)"]
+  EVAL["/eval · /eval/:agentId<br/>Eval Dashboard · one agent's runs"]
+  SKILLS["/skills<br/>list (layout) + empty pane"] --> SKILL["/skills/:id?tab=<br/>same list + skill in the side pane<br/>(config · context · preview · evals · stats · versions)"]
+  CONV["/repos/:repoId/conventions<br/>scan · accept/reject/edit · create skill"]
+  SETTINGS["/settings/:section<br/>API keys · models"]
+
+  PULLS -->|"GET /repos/:id/pulls · /repos/:id/index-state"| API
+  PR -->|"GET /pulls/:id · /reviews · /pulls/:id/comments · /pulls/:id/smart-diff · /pulls/:id/blast(/history)<br/>POST /pulls/:id/review · /findings/:id/(accept|dismiss)<br/>eval case modal: GET /findings/:id/eval-case-draft · POST /findings/:id/eval-case · POST /agents/:id/eval-cases/try"| API
+  AGENTS -->|"/agents · /agents/:id · /agents/:id/skills<br/>evals tab: /agents/:id/eval-cases(/try) · /eval-cases/:id · /agents/:id/eval-runs(/compare) · /eval-runs/:id"| API
+  EVAL -->|"GET /eval/dashboard · POST /agents/:id/eval-runs (Run all agents) · /agents/:id/eval-runs(/compare) · /eval-runs/:id<br/>GET /agents/:id/versions/:v · PUT /agents/:id (Promote vN)"| API
+  SKILLS -->|"/skills · /skills/:id(/versions|/agents)<br/>/skills/community · /skills/import(/preview)<br/>evals tab: /skills/:id/eval-cases(/try) · /eval-cases/:id · /skills/:id/eval-runs(/compare) · /eval-runs/:id · GET /agents"| API
+  CONV -->|"GET /repos/:id/conventions · POST …/extract<br/>PATCH /conventions/:id · POST …/skill(/preview)"| API
+  SETTINGS -->|"/settings · /providers"| API
+```
+
+Cross-cutting chrome lives in `src/components/app-shell` (nav, breadcrumbs,
+`g`-then-key shortcuts). Pages are thin; feature logic sits in colocated
+`_components/<Name>/` folders, each with its own `*.test.tsx`.
+
+## Testing
+
+Component/interaction tests (`*.test.tsx`) run under vitest + jsdom with `fetch`
+mocked, so they need neither the API nor a browser. The real browser journeys
+(client + API + seeded DB) are covered by the deterministic agent-browser suite
+in [`../e2e`](../e2e/README.md) and the `e2e-web.yml` workflow. See
+[`../TESTING.md`](../TESTING.md).

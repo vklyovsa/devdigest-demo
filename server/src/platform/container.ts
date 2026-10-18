@@ -1,0 +1,424 @@
+import type {
+  AuthProvider,
+  SecretsProvider,
+  GitHubClient,
+  GitClient,
+  CodeIndex,
+  Embedder,
+  LLMProvider,
+  RepoDocsReader,
+} from '@devdigest/shared';
+import type { AppConfig } from './config.js';
+import type { PromptLog } from './prompt-log.js';
+import type { Db } from '../db/client.js';
+import { JobRunner } from './jobs.js';
+import { runBus, type RunBus } from './sse.js';
+import { LocalSecretsProvider } from '../adapters/secrets/local.js';
+import { LocalNoAuthProvider } from '../adapters/auth/local.js';
+import { OctokitGitHubClient } from '../adapters/github/octokit.js';
+import { SimpleGitClient } from '../adapters/git/simple-git.js';
+import { RipgrepCodeIndex } from '../adapters/codeindex/ripgrep.js';
+import { FsRepoDocsReader } from '../adapters/docs/fs.js';
+import { OpenAIProvider } from '../adapters/llm/openai.js';
+import { AnthropicProvider } from '../adapters/llm/anthropic.js';
+import { OpenAIEmbedder } from '../adapters/embedder/openai.js';
+import { OpenRouterProvider } from '@devdigest/reviewer-core';
+import { estimateCost } from '../adapters/llm/pricing.js';
+import { PriceBook } from './price-book.js';
+import { ConfigError } from './errors.js';
+import { AgentsRepository } from '../modules/agents/repository.js';
+import { SkillsRepository } from '../modules/skills/repository.js';
+import { ReviewRepository } from '../modules/reviews/repository.js';
+import { RepoRepository } from '../modules/repos/repository.js';
+import { PullsRepository } from '../modules/pulls/repository.js';
+import { SettingsRepository } from '../modules/settings/repository.js';
+import { PullsService } from '../modules/pulls/service.js';
+import { PollingService } from '../modules/polling/service.js';
+import { SettingsService } from '../modules/settings/service.js';
+import { WorkspaceService } from '../modules/workspace/service.js';
+import { IntentRepository } from '../modules/intent/repository.js';
+import { IntentService } from '../modules/intent/service.js';
+import { SmartDiffService } from '../modules/smart-diff/service.js';
+import { BlastService } from '../modules/blast/service.js';
+import { ContextRepository } from '../modules/context/repository.js';
+import { ContextService } from '../modules/context/service.js';
+import { BriefRepository } from '../modules/brief/repository.js';
+import { BriefService } from '../modules/brief/service.js';
+import { ReviewService } from '../modules/reviews/service.js';
+import { EvalRepository } from '../modules/eval/repository.js';
+import { EvalService } from '../modules/eval/service.js';
+import type { RepoIntel } from '../modules/repo-intel/types.js';
+import { RepoIntelService } from '../modules/repo-intel/service.js';
+import { type DepGraph, DepCruiseGraph } from '../adapters/depgraph/index.js';
+import { type Tokenizer, TiktokenTokenizer } from '../adapters/tokenizer/index.js';
+
+/**
+ * DI container. One per app instance. Holds config, db, the JobRunner,
+ * the SSE bus, and lazily-constructed adapters resolved through SecretsProvider.
+ *
+ * Tests construct a container with `overrides` to inject mock adapters; the
+ * Services depend on these interfaces, not the concrete classes.
+ */
+export interface ContainerOverrides {
+  secrets?: SecretsProvider;
+  auth?: AuthProvider;
+  github?: GitHubClient;
+  git?: GitClient;
+  codeIndex?: CodeIndex;
+  embedder?: Embedder;
+  /** Markdown documents of a clone's working tree (Project Context). */
+  repoDocs?: RepoDocsReader;
+  /** Pre-built providers by id (skip key lookup). */
+  llm?: Partial<Record<'openai' | 'anthropic' | 'openrouter', LLMProvider>>;
+  /** repo-intel facade (T1.1+) — tests inject mock RepoIntel implementations. */
+  repoIntel?: RepoIntel;
+  /** repo-intel T3 adapters — only the indexer pipeline reads these. */
+  depgraph?: DepGraph;
+  tokenizer?: Tokenizer;
+}
+
+/**
+ * The logging capability services take. Fastify's `app.log` satisfies it; the
+ * default below keeps a container usable without an app (unit tests, scripts).
+ */
+export interface ContainerLogger {
+  warn(obj: unknown, msg: string): void;
+  info(obj: unknown, msg?: string): void;
+}
+
+const SILENT_LOGGER: ContainerLogger = { warn: () => {}, info: () => {} };
+
+export class Container {
+  readonly config: AppConfig;
+  readonly db: Db;
+  readonly secrets: SecretsProvider;
+  readonly auth: AuthProvider;
+  readonly jobs: JobRunner;
+  readonly runBus: RunBus;
+
+  private _git?: GitClient;
+  private _github?: GitHubClient;
+  private _codeIndex?: CodeIndex;
+  private _embedder?: Embedder;
+  private _repoDocs?: RepoDocsReader;
+  private llmCache = new Map<string, LLMProvider>();
+
+  // Shared repositories for cross-cutting entities (agents, reviews/pulls,
+  // runs). Constructed here, in the composition root, so consuming modules use
+  // `container.agentsRepo` instead of reaching into another module's folder.
+  private _agentsRepo?: AgentsRepository;
+  private _skillsRepo?: SkillsRepository;
+  private _reviewRepo?: ReviewRepository;
+  private _repoRepo?: RepoRepository;
+  private _pullsRepo?: PullsRepository;
+  private _settingsRepo?: SettingsRepository;
+  private _intentRepo?: IntentRepository;
+  private _contextRepo?: ContextRepository;
+  private _briefRepo?: BriefRepository;
+  private _evalRepo?: EvalRepository;
+  private _pullsService?: PullsService;
+  private _pollingService?: PollingService;
+  private _settingsService?: SettingsService;
+  private _workspaceService?: WorkspaceService;
+  private _intentService?: IntentService;
+  private _smartDiffService?: SmartDiffService;
+  private _blastService?: BlastService;
+  private _contextService?: ContextService;
+  private _briefService?: BriefService;
+  private _reviewService?: ReviewService;
+  private _evalService?: EvalService;
+  private logger: ContainerLogger = SILENT_LOGGER;
+  private _repoIntel?: RepoIntel;
+  private _depgraph?: DepGraph;
+  private _tokenizer?: Tokenizer;
+  private _priceBook?: PriceBook;
+
+  constructor(config: AppConfig, db: Db, private overrides: ContainerOverrides = {}) {
+    this.config = config;
+    this.db = db;
+    this.secrets = overrides.secrets ?? new LocalSecretsProvider(config.secretsPath);
+    this.auth = overrides.auth ?? new LocalNoAuthProvider(db);
+    this.runBus = runBus;
+    this.jobs = new JobRunner(db);
+  }
+
+  /** Hand the app's logger to services built from here. Called once, at boot. */
+  attachLogger(logger: ContainerLogger): void {
+    this.logger = logger;
+  }
+
+  get promptLog(): PromptLog {
+    return { mode: this.config.promptLog, sink: this.logger };
+  }
+
+  get git(): GitClient {
+    if (this.overrides.git) return this.overrides.git;
+    this._git ??= new SimpleGitClient(this.config.cloneDir);
+    return this._git;
+  }
+
+  get repoDocs(): RepoDocsReader {
+    if (this.overrides.repoDocs) return this.overrides.repoDocs;
+    this._repoDocs ??= new FsRepoDocsReader();
+    return this._repoDocs;
+  }
+
+  get agentsRepo(): AgentsRepository {
+    return (this._agentsRepo ??= new AgentsRepository(this.db));
+  }
+
+  get skillsRepo(): SkillsRepository {
+    return (this._skillsRepo ??= new SkillsRepository(this.db));
+  }
+
+  get reviewRepo(): ReviewRepository {
+    return (this._reviewRepo ??= new ReviewRepository(this.db));
+  }
+
+  get repoRepo(): RepoRepository {
+    return (this._repoRepo ??= new RepoRepository(this.db));
+  }
+
+  get pullsRepo(): PullsRepository {
+    return (this._pullsRepo ??= new PullsRepository(this.db));
+  }
+
+  get settingsRepo(): SettingsRepository {
+    return (this._settingsRepo ??= new SettingsRepository(this.db));
+  }
+
+  get intentRepo(): IntentRepository {
+    return (this._intentRepo ??= new IntentRepository(this.db));
+  }
+
+  get contextRepo(): ContextRepository {
+    return (this._contextRepo ??= new ContextRepository(this.db));
+  }
+
+  get briefRepo(): BriefRepository {
+    return (this._briefRepo ??= new BriefRepository(this.db));
+  }
+
+  get evalRepo(): EvalRepository {
+    return (this._evalRepo ??= new EvalRepository(this.db));
+  }
+
+  // Use cases. Each takes named ports, never this container — the constructor
+  // is the dependency list, and a test can substitute one collaborator.
+
+  get pullsService(): PullsService {
+    return (this._pullsService ??= new PullsService(
+      this.pullsRepo,
+      this.repoRepo,
+      () => this.github(),
+      this.logger,
+    ));
+  }
+
+  get pollingService(): PollingService {
+    return (this._pollingService ??= new PollingService(this.repoRepo, this.pullsRepo, () =>
+      this.github(),
+    ));
+  }
+
+  get settingsService(): SettingsService {
+    return (this._settingsService ??= new SettingsService(this.settingsRepo, this.secrets, {
+      github: () => this.github(),
+      llm: (id) => this.llm(id),
+      invalidateSecretCaches: () => this.invalidateSecretCaches(),
+    }));
+  }
+
+  get workspaceService(): WorkspaceService {
+    return (this._workspaceService ??= new WorkspaceService(
+      this.repoRepo,
+      this.config.cloneDir,
+    ));
+  }
+
+  get intentService(): IntentService {
+    return (this._intentService ??= new IntentService({
+      intentRepo: this.intentRepo,
+      pullsRepo: this.pullsRepo,
+      repoRepo: this.repoRepo,
+      settingsRepo: this.settingsRepo,
+      git: this.git,
+      github: () => this.github(),
+      llm: (id) => this.llm(id),
+      promptLog: () => this.promptLog,
+    }));
+  }
+
+  get smartDiffService(): SmartDiffService {
+    return (this._smartDiffService ??= new SmartDiffService(this.pullsRepo, this.reviewRepo));
+  }
+
+  get blastService(): BlastService {
+    return (this._blastService ??= new BlastService({
+      pulls: this.pullsRepo,
+      repos: this.repoRepo,
+      repoIntel: this.repoIntel,
+      github: () => this.github(),
+      log: this.logger,
+    }));
+  }
+
+  get contextService(): ContextService {
+    return (this._contextService ??= new ContextService({
+      store: this.contextRepo,
+      repos: this.repoRepo,
+      agents: this.agentsRepo,
+      skills: this.skillsRepo,
+      docs: this.repoDocs,
+      roots: this.config.contextRoots,
+    }));
+  }
+
+  get briefService(): BriefService {
+    return (this._briefService ??= new BriefService({
+      store: this.briefRepo,
+      pulls: this.pullsRepo,
+      intent: this.intentService,
+      blast: this.blastService,
+      context: this.contextService,
+      roles: this.smartDiffService,
+      settingsRepo: this.settingsRepo,
+      tokenizer: this.tokenizer,
+      llm: (id) => this.llm(id),
+      promptLog: () => this.promptLog,
+      log: this.logger,
+    }));
+  }
+
+  get reviewService(): ReviewService {
+    return (this._reviewService ??= new ReviewService(this));
+  }
+
+  get evalService(): EvalService {
+    return (this._evalService ??= new EvalService({
+      store: this.evalRepo,
+      agents: this.agentsRepo,
+      skills: this.skillsRepo,
+      findings: this.reviewService,
+      llm: (id) => this.llm(id),
+      log: this.logger,
+    }));
+  }
+
+  get codeIndex(): CodeIndex {
+    if (this.overrides.codeIndex) return this.overrides.codeIndex;
+    this._codeIndex ??= new RipgrepCodeIndex(this.git);
+    return this._codeIndex;
+  }
+
+  /**
+   * The repo-intel facade (T1.1). All higher-level features (reviews,
+   * blast/onboarding migrations, phantom-gate) code against this interface.
+   * Tests inject a mock via `ContainerOverrides.repoIntel`.
+   */
+  get repoIntel(): RepoIntel {
+    if (this.overrides.repoIntel) return this.overrides.repoIntel;
+    this._repoIntel ??= new RepoIntelService(this);
+    return this._repoIntel;
+  }
+
+  /** Import-graph builder (dependency-cruiser). T3 indexer pipeline only. */
+  get depgraph(): DepGraph {
+    if (this.overrides.depgraph) return this.overrides.depgraph;
+    this._depgraph ??= new DepCruiseGraph();
+    return this._depgraph;
+  }
+
+  /** Token counter (js-tiktoken) for the repo-map budget search. */
+  get tokenizer(): Tokenizer {
+    if (this.overrides.tokenizer) return this.overrides.tokenizer;
+    this._tokenizer ??= new TiktokenTokenizer();
+    return this._tokenizer;
+  }
+
+  /**
+   * Live OpenRouter pricing for cost attribution. The lister builds a bare
+   * OpenRouter provider just for `/models` (no estimator needed) and degrades to
+   * `[]` when no key is configured; the static `estimateCost` table is the
+   * fallback for OpenAI/Anthropic and a cold/cold-failed cache.
+   */
+  get priceBook(): PriceBook {
+    this._priceBook ??= new PriceBook(async () => {
+      try {
+        const key = await this.secrets.get('OPENROUTER_API_KEY');
+        if (!key) return [];
+        return await new OpenRouterProvider(key).listModels();
+      } catch {
+        return [];
+      }
+    }, estimateCost);
+    return this._priceBook;
+  }
+
+  async github(): Promise<GitHubClient> {
+    if (this.overrides.github) return this.overrides.github;
+    if (this._github) return this._github;
+    const token = await this.secrets.get('GITHUB_TOKEN');
+    if (!token) throw new ConfigError('GITHUB_TOKEN is not configured');
+    this._github = new OctokitGitHubClient(token);
+    return this._github;
+  }
+
+  /** Resolve an LLM provider by id; constructs from the secret key, cached. */
+  async llm(id: 'openai' | 'anthropic' | 'openrouter'): Promise<LLMProvider> {
+    const injected = this.overrides.llm?.[id];
+    if (injected) return injected;
+    const cached = this.llmCache.get(id);
+    if (cached) return cached;
+    const provider = await this.buildLlm(id);
+    this.llmCache.set(id, provider);
+    return provider;
+  }
+
+  private async buildLlm(id: 'openai' | 'anthropic' | 'openrouter'): Promise<LLMProvider> {
+    if (id === 'openai') {
+      const key = await this.secrets.get('OPENAI_API_KEY');
+      if (!key) throw new ConfigError('OPENAI_API_KEY is not configured');
+      return new OpenAIProvider(key);
+    }
+    if (id === 'openrouter') {
+      // Single OpenRouter provider lives in reviewer-core (shared with the CI
+      // runner); inject the PriceBook so cost attribution uses LIVE OpenRouter
+      // prices (with the static table as a fallback) rather than a hardcoded one.
+      const key = await this.secrets.get('OPENROUTER_API_KEY');
+      if (!key) throw new ConfigError('OPENROUTER_API_KEY is not configured');
+      return new OpenRouterProvider(key, {
+        estimateCost: (model, tokensIn, tokensOut) =>
+          this.priceBook.estimate(model, tokensIn, tokensOut),
+      });
+    }
+    const key = await this.secrets.get('ANTHROPIC_API_KEY');
+    if (!key) throw new ConfigError('ANTHROPIC_API_KEY is not configured');
+    return new AnthropicProvider(key);
+  }
+
+  async embedder(): Promise<Embedder> {
+    // Injected embedders (tests) always win. Otherwise embeddings are gated by
+    // config: when disabled we throw BEFORE constructing the OpenAI client, so
+    // the app makes ZERO OpenAI requests. All callers wrap this in try/catch and
+    // degrade gracefully (memory/RAG simply returns no hits).
+    if (this.overrides.embedder) return this.overrides.embedder;
+    if (!this.config.embeddingsEnabled) {
+      throw new ConfigError('Embeddings are disabled (set EMBEDDINGS_ENABLED=true to enable memory/RAG)');
+    }
+    if (this._embedder) return this._embedder;
+    const openai = await this.llm('openai');
+    this._embedder = new OpenAIEmbedder(openai);
+    return this._embedder;
+  }
+
+  /**
+   * Drop cached provider clients so the next resolve picks up changed secrets.
+   * Call after persisting a new API key/PAT via SecretsProvider.set.
+   */
+  invalidateSecretCaches(): void {
+    this.llmCache.clear();
+    this._github = undefined;
+    this._embedder = undefined;
+  }
+}

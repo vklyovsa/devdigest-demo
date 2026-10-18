@@ -1,0 +1,123 @@
+import { z } from 'zod';
+
+/**
+ * Review / Findings contracts.
+ * These Zod schemas are the single source of truth for:
+ *  - API request/response validation,
+ *  - LLM structured output (`response_format` / forced tool-use),
+ *  - shared web↔api types.
+ */
+
+export const Severity = z.enum(['CRITICAL', 'WARNING', 'SUGGESTION']);
+export type Severity = z.infer<typeof Severity>;
+
+export const FindingCategory = z.enum(['bug', 'security', 'perf', 'style', 'test']);
+export type FindingCategory = z.infer<typeof FindingCategory>;
+
+export const FindingKind = z.enum([
+  'finding',
+  'secret_leak',
+  'lethal_trifecta',
+  'phantom',
+  'hook',
+]);
+export type FindingKind = z.infer<typeof FindingKind>;
+
+export const Verdict = z.enum(['request_changes', 'approve', 'comment']);
+export type Verdict = z.infer<typeof Verdict>;
+
+export const TrifectaComponent = z.enum([
+  'private_data_access',
+  'untrusted_input',
+  'exfil_path',
+]);
+export type TrifectaComponent = z.infer<typeof TrifectaComponent>;
+
+export const TrifectaEvidence = z.object({
+  component: TrifectaComponent,
+  file: z.string(),
+  line: z.number().int(),
+});
+export type TrifectaEvidence = z.infer<typeof TrifectaEvidence>;
+
+/**
+ * Finding — the atomic review unit. `start_line`/`end_line` are used by the
+ * citation-grounding gate (must intersect a real diff hunk for diff-findings).
+ */
+export const Finding = z.object({
+  id: z.string(),
+  severity: Severity,
+  category: FindingCategory,
+  title: z.string(),
+  file: z.string(),
+  start_line: z.number().int(),
+  end_line: z.number().int(),
+  rationale: z.string(), // markdown
+  suggestion: z.string().nullish(), // markdown
+  confidence: z.number().min(0).max(1),
+  kind: FindingKind.nullish(),
+  // Lethal-trifecta variant fields (present only when kind === 'lethal_trifecta')
+  trifecta_components: z.array(TrifectaComponent).nullish(),
+  evidence: z.array(TrifectaEvidence).nullish(),
+});
+export type Finding = z.infer<typeof Finding>;
+
+/**
+ * Read-only projection of a finding for list surfaces (the PR list's FINDINGS
+ * popover): exactly what a preview renders, and nothing more — no action
+ * timestamps, no suggestion, no trifecta fields.
+ */
+export const FindingPreview = Finding.pick({
+  id: true,
+  severity: true,
+  category: true,
+  title: true,
+  file: true,
+  start_line: true,
+  end_line: true,
+  confidence: true,
+  rationale: true,
+});
+export type FindingPreview = z.infer<typeof FindingPreview>;
+
+export const SeverityCount = z.object({ severity: Severity, count: z.number().int() });
+export type SeverityCount = z.infer<typeof SeverityCount>;
+
+/**
+ * Severity roll-up of a set of findings — one review run on the PR page, or a
+ * PR's current findings on the list. `counts` is an ARRAY of the severities
+ * actually present, worst first: a missing severity means zero, so the UI can
+ * never render a "0 CRITICAL" pill. `previews` is capped by the producer.
+ */
+export const FindingsSummary = z.object({
+  total: z.number().int(),
+  counts: z.array(SeverityCount),
+  previews: z.array(FindingPreview),
+});
+export type FindingsSummary = z.infer<typeof FindingsSummary>;
+
+/** Review — the consolidated structured output of a single agent run. */
+export const Review = z.object({
+  verdict: Verdict,
+  summary: z.string(),
+  score: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .describe(
+      'Overall PR quality from 0 to 100, where HIGHER is better. 90–100 = no or only trivial issues (approve); 60–89 = minor suggestions; 30–59 = warnings worth addressing; 0–29 = critical problems. Must be consistent with `findings`: if there are no findings, the score is 90 or above.',
+    ),
+  findings: z.array(Finding),
+});
+export type Review = z.infer<typeof Review>;
+
+/** Action taken on a finding (accept/dismiss/learn/reply). */
+export const FindingActionKind = z.enum(['accept', 'dismiss', 'learn', 'reply']);
+export type FindingActionKind = z.infer<typeof FindingActionKind>;
+
+export const FindingAction = z.object({
+  action: FindingActionKind,
+  reply: z.string().optional(),
+});
+export type FindingAction = z.infer<typeof FindingAction>;
